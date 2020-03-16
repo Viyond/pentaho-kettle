@@ -3583,9 +3583,10 @@ public class Database implements VariableSpace, LoggingObjectInterface, Closeabl
       return;
     }
 
+    String actualSchemaName = environmentSubstitute( logTable.getActualSchemaName() );
+    String actualTableName = environmentSubstitute( logTable.getActualTableName() );
     String schemaTable =
-      databaseMeta.getQuotedSchemaTableCombination( environmentSubstitute( logTable.getActualSchemaName() ),
-        environmentSubstitute( logTable.getActualTableName() ) );
+      databaseMeta.getQuotedSchemaTableCombination( actualSchemaName, actualTableName );
 
     if ( schemaTable.isEmpty() ) {
       //we can't process without table name
@@ -3600,8 +3601,15 @@ public class Database implements VariableSpace, LoggingObjectInterface, Closeabl
         .registerException( log, PKG, "Database.Exception.LogTimeoutDefinedOnTableWithoutLogField" );
     }
 
+    String timeoutFieldName = logTable.getTimeoutField().getFieldName();
+    String timeoutPredicate = "";
+    if ( checkColumnExists( actualSchemaName, actualTableName, timeoutFieldName ) ) {
+      timeoutPredicate = " AND " + timeoutFieldName + "=\"\"";
+      cleanupTimedoutRecords( logTable );
+    }
+
     String sql =
-      "DELETE FROM " + schemaTable + " WHERE " + databaseMeta.quoteField( logField.getFieldName() ) + " < ?";
+      "DELETE FROM " + schemaTable + " WHERE " + databaseMeta.quoteField( logField.getFieldName() ) + " < ?" + timeoutPredicate;
     long now = System.currentTimeMillis();
     long limit = now - Math.round( timeout * 24 * 60 * 60 * 1000 );
     RowMetaAndData row = new RowMetaAndData();
@@ -3614,6 +3622,41 @@ public class Database implements VariableSpace, LoggingObjectInterface, Closeabl
       DatabaseLogExceptionFactory.getExceptionStrategy( logTable )
         .registerException( log, PKG, "Database.Exception.UnableToCleanUpOlderRecordsFromLogTable",
           environmentSubstitute( logTable.getActualTableName() ) );
+    }
+  }
+
+  private void cleanupTimedoutRecords( LogTableCoreInterface logTable ) throws KettleDatabaseException {
+
+    String actualSchemaName = environmentSubstitute( logTable.getActualSchemaName() );
+    String actualTableName = environmentSubstitute( logTable.getActualTableName() );
+    String timeoutFieldName = logTable.getTimeoutField().getFieldName();
+    String schemaTable =
+            databaseMeta.getQuotedSchemaTableCombination( actualSchemaName, actualTableName );
+
+    if ( schemaTable.isEmpty() ) {
+      //we can't process without table name
+      DatabaseLogExceptionFactory.getExceptionStrategy( logTable )
+              .registerException( log, PKG, "DatabaseMeta.Error.LogTableNameNotFound" );
+    }
+
+    LogTableField logField = logTable.getLogDateField();
+    if ( logField == null ) {
+      //can't stand without logField
+      DatabaseLogExceptionFactory.getExceptionStrategy( logTable )
+              .registerException( log, PKG, "Database.Exception.LogTimeoutDefinedOnTableWithoutLogField" );
+    }
+
+    String sql =
+            "DELETE FROM " + schemaTable + " WHERE " + timeoutFieldName + "<>'' "
+            + "AND " + logField.getFieldName() + "<DATE_SUB(current_date(), INTERVAL " + timeoutFieldName + " DAY)";
+
+    try {
+      //fire database
+      execStatement( sql );
+    } catch ( Exception e ) {
+      DatabaseLogExceptionFactory.getExceptionStrategy( logTable )
+              .registerException( log, PKG, "Database.Exception.UnableToCleanUpOlderRecordsFromLogTable",
+                      environmentSubstitute( logTable.getActualTableName() ) );
     }
   }
 
